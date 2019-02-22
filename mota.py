@@ -9,7 +9,22 @@ from tensorflow.keras.layers import Conv2D, MaxPooling2D
 
 GAMMA       = 0.99
 BATCH_SIZE  = 64
-MEMORY_SIZE = 1024
+BATCH_EPOCH = 1
+MEMORY_SIZE = 2024
+
+ACTION_MAP = (
+    [0,0,0,0], # frozen
+    [1,0,0,0], # move forward
+    [2,0,0,0], # move back
+    [0,1,0,0], # camera right
+    [0,2,0,0], # camera left
+    [0,0,1,0], # jump
+    [1,0,1,0]  # jump forward
+    )
+#ACTION_SIZE = 3*3*2*3
+ACTION_SIZE = len(ACTION_MAP)
+
+USE_ADVANTAGE = True
 
 def normalize(v):
     norm=np.linalg.norm(v, ord=1)
@@ -19,9 +34,13 @@ def normalize(v):
     
 class Model:
     def __init__(self):
-        self.output_size = 3*3*2*3
+        np.random.seed(4)
         # probabilities
-        self.prob = [1]*self.output_size
+        self.prob = [1]*ACTION_SIZE
+        self.prob[1] = 2
+        self.prob[5] = self.prob[6] = .2 # jump
+        self.prob[3] = self.prob[4] = .5 # camera
+        '''
         self.prob[0] = .1 # discourage standing still
         # reduce probability of jumping
         m = 0
@@ -33,10 +52,11 @@ class Model:
                             self.prob[m] += 150 # encourage moving forward
                             
                         m += 1
+        '''
         self.prob = normalize(self.prob)
         #
         self.epsilon = 1.0  # exploration rate
-        self.epsilon_min = 0.01
+        self.epsilon_min = 0.1
         self.epsilon_decay = 0.99995
         
         self.memory = []
@@ -56,14 +76,14 @@ class Model:
         self.model.add(Flatten())
         self.model.add(Dense(512, activation='relu'))
         #self.model.add(Dropout(0.5))
-        self.model.add(Dense(self.output_size, activation='linear'))
+        self.model.add(Dense(ACTION_SIZE, activation='linear'))
 
         self.model.compile(optimizer=tf.train.AdamOptimizer(0.001), loss='mse')
         
     def act(self, obs, explore=True):
         if explore and self.epsilon > self.epsilon_min and np.random.random()<self.epsilon:
             self.epsilon *= self.epsilon_decay
-            return np.random.choice(self.output_size, 1, p=self.prob)[0]
+            return np.random.choice(ACTION_SIZE, 1, p=self.prob)[0]
             
         obs = np.reshape(obs[0], (-1, 168, 168, 3))
         out = self.model.predict(obs)
@@ -77,7 +97,6 @@ class Model:
             del self.memory[0]
         
     def train(self, obs, action, reward, obsn, done):
-        print(f'Training Single:{reward} ->')
         obs = np.reshape(obs[0], (-1, 168, 168, 3))
         obsn = np.reshape(obsn[0], (-1, 168, 168, 3))
         
@@ -87,10 +106,13 @@ class Model:
         reward_predicted[0][action] = reward
         if not done:
             reward_predicted[0][action] += GAMMA * np.max(Q_sa)
+            # advantage
+            if USE_ADVANTAGE:
+                reward_predicted[0][action] -= np.mean(reward_predicted[0])
+                
         self.model.fit(obs, reward_predicted, epochs=10, verbose=0)
         
     def train_batch(self):
-        print(f'Training Batch ->')
         experience = random.sample(self.memory, min(len(self.memory), BATCH_SIZE))
 
         obs, actions, rewards, obsn, done = zip(*experience)
@@ -103,5 +125,9 @@ class Model:
             reward_predicted[i][actions[i]] = rewards[i]
             if not done[i]:
                 reward_predicted[i][actions[i]] += GAMMA * np.max(Q_sa[i])
-        self.model.fit(obs, reward_predicted, epochs=10, verbose=0)
+        self.model.fit(obs, reward_predicted, epochs=BATCH_EPOCH, verbose=0)
         
+        
+if __name__ == '__main__':
+    model = Model()
+    print('done!')

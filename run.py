@@ -1,21 +1,28 @@
 from obstacle_tower_env import ObstacleTowerEnv
 import sys, os, re
 import argparse
-from mota import Model
+from mota import Model, ACTION_MAP
 from tqdm import trange
 from PIL import Image
 import numpy as np
 from skimage.measure import compare_ssim
 
+'''
 input_map = []
 for i in range(3):
     for j in range(3):
         for k in range(2):
             for l in range(3):
                 input_map.append([i, j, k, l])
-                
+'''
+
+MAX_EPISODES = 50
+REWARD_MULTIPLIER = 10
+EPISODE_DONE_PENALTY = False
+COMPARE_PREVIOUS_FRAMES = True
+TRAIN_REWARD = False
+
 model = Model()
-MAX_EPISODES = 20
 
 def run_test(env, episode_number):
     print('Running test!')
@@ -25,10 +32,10 @@ def run_test(env, episode_number):
     imdata = obs[0]*255
     im = [Image.fromarray(imdata.astype(np.uint8))]
     
-    for i in range(5000): #trange(5000):
+    for i in range(50000): #trange(5000):
         #
         action = model.act(obs, False)
-        obsn, reward, done, _ = env.step(input_map[action])
+        obsn, reward, done, _ = env.step(ACTION_MAP[action])
         
         imdata = obsn[0]*255
         im.append(Image.fromarray(imdata.astype(np.uint8)))
@@ -51,29 +58,35 @@ def run_episode(env, episode_number, save=True):
         imdata = obs[0]*255
         im = [Image.fromarray(imdata.astype(np.uint8))]
     
-    #for i in range(5000): 
-    for i in trange(5000):
+    num_floors = 1
+    
+    for i in range(50000):
+    #for i in trange(5000):
         #
         action = model.act(obs)
-        obsn, reward, done, _ = env.step(input_map[action])
-        
+        obsn, reward, done, _ = env.step(ACTION_MAP[action])
+        if reward==1:
+            num_floors += 1
+            
         if save:
             imdata = obsn[0]*255
             im.append(Image.fromarray(imdata.astype(np.uint8)))
     
         # increase reward impact
-        reward *= 10
-        #
-        #if done and reward==0:
-        #    reward = -10
+        reward *= REWARD_MULTIPLIER
+        
+        if EPISODE_DONE_PENALTY:
+            if done and reward==0:
+                reward = -10
         
         # if image same as previous
         # staring/standing still?
-        #if len(model.memory)>2 and (np.array_equal(model.memory[-1][0], obsn[0]) or np.array_equal(model.memory[-2][0], obsn[0])):
-        if len(model.memory)>2 and (compare_ssim(model.memory[-1][0], obsn[0], multichannel=True)>0.9 or compare_ssim(model.memory[-2][0], obsn[0], multichannel=True)>0.9):
-            reward -= 1
+        if COMPARE_PREVIOUS_FRAMES:
+            if len(model.memory)>2 and (compare_ssim(model.memory[-1][0], obsn[0], multichannel=True)>0.95 or compare_ssim(model.memory[-2][0], obsn[0], multichannel=True)>0.95):
+                reward -= 1
             
-        if reward!=0:
+        if reward!=0 and TRAIN_REWARD:
+            print(f'\tTraining Single:{reward}')
             model.train(obs, action, reward, obsn, done)
             
         #if not done: # reward for surviving
@@ -89,6 +102,7 @@ def run_episode(env, episode_number, save=True):
     if save:
         im[0].save(f'episode{episode_number}.gif', save_all=True, append_images=im[1:], duration=200, loop=0)
 
+    print(f'\tTraining Batch: Floors:{num_floors}.')
     model.train_batch()
     
     return total_reward
@@ -114,6 +128,8 @@ if __name__ == '__main__':
 
     print('opening env...')
     env = ObstacleTowerEnv(args.environment_filename, docker_training=args.docker_training, retro=False, realtime_mode=False)
+    env.seed(4)
+    
     if env.is_grading():
         episode_reward = run_evaluation(env)
     else:
@@ -123,11 +139,11 @@ if __name__ == '__main__':
             episode_number += 1
             print(f"Episode {episode_number}...")
             episode_reward = run_episode(env, episode_number, episode_number%5==0 or episode_number==1)
-            print(f"...reward: {episode_reward}. Epsilon: {model.epsilon}")
+            print(f"...reward: {round(episode_reward,5)}. Epsilon: {round(model.epsilon,5)}")
             
             if episode_number%10==0:
                 episode_reward = run_test(env, episode_number)
-                print(f'...test reward:{episode_reward}.')
+                print(f'...test reward:{round(episode_reward,5)}.')
                 
             if episode_number>=MAX_EPISODES:
                 break
